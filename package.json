@@ -7,16 +7,26 @@
     "build": "tsc",
     "test": "vitest run",
     "test:watch": "vitest",
-    "sim": "tsx src/backtest/simRunner.ts",
-    "start": "tsx src/index.ts"
+    "sim": "MODE=sim tsx src/main.ts",
+    "paper": "tsx src/main.ts",
+    "live": "tsx src/main.ts",
+    "start": "tsx src/main.ts",
+    "smoke": "tsx scripts/smoke-order.ts",
+    "drill:kill": "tsx scripts/kill-switch-drill.ts",
+    "logs": "tsx scripts/log-stats.ts"
   },
   "devDependencies": {
-    "typescript": "^5.4.0",
-    "vitest": "^1.6.0",
+    "@types/node": "^20.11.0",
     "tsx": "^4.7.0",
-    "@types/node": "^20.11.0"
+    "typescript": "^5.4.0",
+    "vitest": "^1.6.0"
   },
   "engines": {
-    "node": ">=18"
+    "node": ">=20"
+  },
+  "dependencies": {
+    "@nktkas/hyperliquid": "^0.31.0",
+    "dotenv": "^17.3.1",
+    "viem": "^2.46.2"
   }
 }

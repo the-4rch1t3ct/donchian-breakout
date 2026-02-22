@@ -3,6 +3,16 @@ import type { StrategyLogger } from '../logger.js';
 import type { IExchangeClient } from '../exchange/exchangeClient.js';
 import type { Candle, ExecutionPath, FillResult, Side } from '../types/index.js';
 
+/** Audit-grade order log details (no secrets). */
+export type OrderLogReason =
+  | 'ENTRY'
+  | 'STOP'
+  | 'TRAIL'
+  | 'FLATTEN_ALL'
+  | 'KILL_SWITCH'
+  | 'CANCEL_TIMEOUT'
+  | 'MAKER_TIMEOUT_IOC';
+
 export interface MicrostructureCheck {
   pass: boolean;
   reason?: string;
@@ -72,9 +82,18 @@ export class ExecutionService {
     return sum / candles.length;
   }
 
+  private logOrderEvent(
+    event: string,
+    symbol: string,
+    side: Side,
+    details: Record<string, unknown>,
+  ): void {
+    this.logger.logEvent('EXCHANGE', event, symbol, side, { details });
+  }
+
   /**
-   * Attempt entry: maker-first, fallback to taker.
-   * Returns the execution path and fill result.
+   * Attempt entry: maker-first (short timeout), then IOC marketable limit with slippage cap.
+   * All order actions are logged for audit (ORDER_PLACED, ORDER_CANCELLED, ORDER_FILLED, ORDER_FAILED).
    */
   async executeEntry(
     symbol: string,
@@ -101,10 +120,40 @@ export class ExecutionService {
     const makerPrice = side === 'long'
       ? book.bestBid * (1 + improveBps)
       : book.bestAsk * (1 - improveBps);
+    const notional = makerPrice * size;
 
+    this.logOrderEvent('ORDER_PLACED', symbol, side, {
+      orderType: 'LIMIT_MAKER',
+      postOnly: true,
+      ioc: false,
+      price: makerPrice,
+      size,
+      notional,
+      cloid: null,
+      orderId: null,
+      reason: 'ENTRY',
+      spreadBps: micro.spreadBps,
+      estSlippageBps: micro.estimatedSlippageBps,
+      attempt: 1,
+    });
     const makerResult = await this.exchange.placeLimit(symbol, side, makerPrice, size, true);
 
-    if (makerResult.filled) {
+    if (makerResult.filled && makerResult.fillPrice != null && makerResult.fillSize != null) {
+      this.logOrderEvent('ORDER_FILLED', symbol, side, {
+        orderType: 'LIMIT_MAKER',
+        postOnly: true,
+        ioc: false,
+        price: makerPrice,
+        size,
+        notional,
+        orderId: makerResult.orderId ?? null,
+        reason: 'ENTRY',
+        attempt: 1,
+        fillPrice: makerResult.fillPrice,
+        fillSize: makerResult.fillSize,
+        fees: makerResult.fees ?? null,
+        slippageBps: makerResult.slippageBps ?? null,
+      });
       this.logger.logSignal(symbol, side, 'MAKER_FILLED', {
         executionPath: 'MAKER_FILLED',
         spreadBps: micro.spreadBps,
@@ -115,7 +164,12 @@ export class ExecutionService {
     }
 
     if (makerResult.orderId) {
-      await this.sleep(this.config.makerTimeoutSeconds * 1000);
+      await this.sleep(this.config.makerTimeoutMs);
+      this.logOrderEvent('ORDER_CANCELLED', symbol, side, {
+        orderId: makerResult.orderId,
+        reason: 'CANCEL_TIMEOUT',
+        attempt: 1,
+      });
       await this.exchange.cancel(makerResult.orderId);
     }
 
@@ -131,8 +185,39 @@ export class ExecutionService {
       };
     }
 
-    const takerResult = await this.exchange.placeMarketable(symbol, side, size);
-    if (takerResult.filled) {
+    const iocSlippageBps = this.config.iocMaxSlippageBps;
+    this.logOrderEvent('ORDER_PLACED', symbol, side, {
+      orderType: 'LIMIT_IOC',
+      postOnly: false,
+      ioc: true,
+      price: null,
+      size,
+      notional: (side === 'long' ? book.bestAsk : book.bestBid) * size,
+      cloid: null,
+      orderId: null,
+      reason: 'ENTRY',
+      spreadBps: microRecheck.spreadBps,
+      estSlippageBps: microRecheck.estimatedSlippageBps,
+      attempt: 2,
+      maxSlippageBps: iocSlippageBps,
+    });
+    const takerResult = await this.exchange.placeMarketable(symbol, side, size, {
+      maxSlippageBps: iocSlippageBps,
+    });
+
+    if (takerResult.filled && takerResult.fillPrice != null && takerResult.fillSize != null) {
+      this.logOrderEvent('ORDER_FILLED', symbol, side, {
+        orderType: 'LIMIT_IOC',
+        ioc: true,
+        size,
+        orderId: takerResult.orderId ?? null,
+        reason: 'ENTRY',
+        attempt: 2,
+        fillPrice: takerResult.fillPrice,
+        fillSize: takerResult.fillSize,
+        fees: takerResult.fees ?? null,
+        slippageBps: takerResult.slippageBps ?? null,
+      });
       this.logger.logSignal(symbol, side, 'TAKER_FILLED_AFTER_MAKER_TIMEOUT', {
         executionPath: 'MAKER_TIMEOUT_TAKER',
         spreadBps: microRecheck.spreadBps,
@@ -142,6 +227,12 @@ export class ExecutionService {
       return { path: 'MAKER_TIMEOUT_TAKER', fill: takerResult };
     }
 
+    this.logOrderEvent('ORDER_FAILED', symbol, side, {
+      orderType: 'LIMIT_IOC',
+      reason: 'ENTRY',
+      attempt: 2,
+      details: 'IOC unfilled or rejected',
+    });
     this.logger.logSignal(symbol, side, 'NO_FILL', {
       executionPath: 'SKIPPED_NO_FILL',
     });

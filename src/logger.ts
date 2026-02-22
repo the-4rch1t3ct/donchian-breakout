@@ -1,6 +1,6 @@
 import * as fs from 'node:fs';
 import * as path from 'node:path';
-import type { LogEntry } from './types/index.js';
+import type { LogEntry, LogModule } from './types/index.js';
 
 export class StrategyLogger {
   private filePath: string | null;
@@ -45,6 +45,23 @@ export class StrategyLogger {
       symbol,
       side,
       module: 'DONCHIAN_15M_CLOSE',
+      event,
+      ...extra,
+    });
+  }
+
+  logEvent(
+    module: LogModule,
+    event: string,
+    symbol = '',
+    side: '' | 'long' | 'short' = '',
+    extra: Partial<LogEntry> = {},
+  ): void {
+    this.log({
+      timestamp: new Date().toISOString(),
+      symbol,
+      side,
+      module,
       event,
       ...extra,
     });

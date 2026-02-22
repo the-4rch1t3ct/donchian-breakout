@@ -155,6 +155,171 @@ describe('Close-confirmed breakout with buffer', () => {
   });
 });
 
+describe('Donchian width filter', () => {
+  it('when ENABLE_WIDTH_FILTER=true and widthPct below threshold, logs SKIPPED_LOW_WIDTH_PCT', async () => {
+    const env = makeTestEnv({
+      donchianLength: 10,
+      atrLength: 8,
+      adxLength: 8,
+      bufferBps: 3,
+      minAtrPct: 0.001,
+      minAdx: 1,
+      maxCandleRangeAtr: 10,
+      enableWidthFilter: true,
+      widthPctMin: 0.05,
+      widthPctMinSoft: 0.05,
+    });
+    const ts = Date.UTC(2025, 0, 1);
+    await env.riskService.initDay(ts, 10_000);
+
+    // Narrow channel: last 10 bars (lookback) have high=102, low=98 → mid=100, width = 4/100 = 0.04 (4%)
+    const candles = [];
+    for (let i = 0; i < 25; i++) {
+      candles.push(makeCandle(ts + i * 900_000, 100, 102, 98, 100));
+    }
+    // Breakout candle: close above donchian high (102)
+    candles.push(makeCandle(ts + 25 * 900_000, 100, 104, 99, 103));
+    env.exchange.setCurrentCandle('TEST', candles[candles.length - 1]);
+    await env.strategy.onBar('TEST', candles, ts + 25 * 900_000);
+
+    const logs = env.logger.getBuffer();
+    const skipWidth = logs.find(l => l.event === 'SKIPPED_LOW_WIDTH_PCT');
+    expect(skipWidth).toBeDefined();
+    expect(skipWidth?.details?.widthPct).toBeLessThan(0.05);
+    expect(skipWidth?.details?.threshold).toBe(0.05);
+  });
+
+  it('when ENABLE_WIDTH_FILTER=false, does not skip for low width', async () => {
+    const env = makeTestEnv({
+      donchianLength: 10,
+      atrLength: 8,
+      adxLength: 8,
+      bufferBps: 3,
+      minAtrPct: 0.001,
+      minAdx: 1,
+      maxCandleRangeAtr: 10,
+      enableWidthFilter: false,
+      widthPctMin: 0.05,
+    });
+    const ts = Date.UTC(2025, 0, 1);
+    await env.riskService.initDay(ts, 10_000);
+
+    const candles = [];
+    for (let i = 0; i < 25; i++) {
+      candles.push(makeCandle(ts + i * 900_000, 100, 102, 98, 100));
+    }
+    candles.push(makeCandle(ts + 25 * 900_000, 100, 104, 99, 103));
+    env.exchange.setCurrentCandle('TEST', candles[candles.length - 1]);
+    await env.strategy.onBar('TEST', candles, ts + 25 * 900_000);
+
+    const logs = env.logger.getBuffer();
+    const skipWidth = logs.find(l => l.event === 'SKIPPED_LOW_WIDTH_PCT');
+    expect(skipWidth).toBeUndefined();
+    const hasEntry = logs.some(l => l.event === 'ENTRY_SIGNAL' || l.event === 'POSITION_OPENED');
+    expect(hasEntry).toBe(true);
+  });
+});
+
+describe('ATR% max (chaos ceiling)', () => {
+  /** Candles: donchianLength=5 so lookback is bars 9..13. High range on 9..14 so ATR% is high. Bar 14 breaks out above donchian high. */
+  function highAtrBreakoutCandles(ts: number, price = 100): ReturnType<typeof makeCandle>[] {
+    const candles: ReturnType<typeof makeCandle>[] = [];
+    const range = price * 0.025; // 2.5% range → ATR ~2.5%, atrPct ~0.025
+    for (let i = 0; i < 14; i++) {
+      const c = price + (i - 5) * 0.2;
+      candles.push(makeCandle(ts + i * 900_000, c - range, c + range, c - range, c));
+    }
+    // Bars 9..13 have high up to ~price+range+0.6; donchian high ~104.2. Breakout: close well above.
+    const donchianHighApprox = price + range + 0.6;
+    candles.push(makeCandle(
+      ts + 14 * 900_000,
+      price,
+      donchianHighApprox + 3,
+      price - range,
+      donchianHighApprox + 1.5, // close clearly above donchian high → breakout
+    ));
+    return candles;
+  }
+
+  it('when ATR_PCT_MAX unset (Infinity), does not skip for high ATR', async () => {
+    const env = makeTestEnv({
+      donchianLength: 5,
+      atrLength: 14,
+      adxLength: 5,
+      bufferBps: 3,
+      minAtrPct: 0.001,
+      minAdx: 1,
+      maxCandleRangeAtr: 10,
+      atrPctMax: Infinity,
+      atrPctMaxSoft: Infinity,
+    });
+    const ts = Date.UTC(2025, 0, 1);
+    await env.riskService.initDay(ts, 10_000);
+
+    const candles = highAtrBreakoutCandles(ts);
+    env.exchange.setCurrentCandle('TEST', candles[candles.length - 1]);
+    await env.strategy.onBar('TEST', candles, ts + 14 * 900_000);
+
+    const logs = env.logger.getBuffer();
+    expect(logs.some(l => l.event === 'SKIPPED_HIGH_ATR_PCT')).toBe(false);
+  });
+
+  it('when atrPctMax set and atrPct above threshold, logs SKIPPED_HIGH_ATR_PCT and does not emit ENTRY_SIGNAL', async () => {
+    const env = makeTestEnv({
+      donchianLength: 5,
+      atrLength: 14,
+      adxLength: 5,
+      bufferBps: 3,
+      minAtrPct: 0.001,
+      minAdx: 1,
+      maxCandleRangeAtr: 10,
+      atrPctMax: 0.01,
+      atrPctMaxSoft: 0.01,
+    });
+    const ts = Date.UTC(2025, 0, 1);
+    await env.riskService.initDay(ts, 10_000);
+
+    const candles = highAtrBreakoutCandles(ts);
+    env.exchange.setCurrentCandle('TEST', candles[candles.length - 1]);
+    await env.strategy.onBar('TEST', candles, ts + 14 * 900_000);
+
+    const logs = env.logger.getBuffer();
+    const highSkip = logs.find(l => l.event === 'SKIPPED_HIGH_ATR_PCT');
+    expect(highSkip).toBeDefined();
+    expect(highSkip?.details?.atrPct).toBeGreaterThan(0.01);
+    expect(highSkip?.details?.threshold).toBe(0.01);
+    expect(highSkip?.details?.softBrake).toBe(false);
+    expect(logs.some(l => l.event === 'ENTRY_SIGNAL')).toBe(false);
+  });
+
+  it('soft-brake path uses atrPctMaxSoft and logs softBrake: true', async () => {
+    const env = makeTestEnv({
+      donchianLength: 5,
+      atrLength: 14,
+      adxLength: 5,
+      bufferBps: 3,
+      minAtrPct: 0.001,
+      minAdx: 1,
+      maxCandleRangeAtr: 10,
+      atrPctMax: 0.03,
+      atrPctMaxSoft: 0.02,
+    });
+    const ts = Date.UTC(2025, 0, 1);
+    await env.riskService.initDay(ts, 10_000);
+
+    const candles = highAtrBreakoutCandles(ts);
+    env.exchange.setCurrentCandle('TEST', candles[candles.length - 1]);
+    const tickContext = { equity: 9850, dd: -0.015, softBrake: true };
+    await env.strategy.onBar('TEST', candles, ts + 14 * 900_000, tickContext);
+
+    const logs = env.logger.getBuffer();
+    const highSkip = logs.find(l => l.event === 'SKIPPED_HIGH_ATR_PCT');
+    expect(highSkip).toBeDefined();
+    expect(highSkip?.details?.softBrake).toBe(true);
+    expect(highSkip?.details?.threshold).toBe(0.02);
+  });
+});
+
 describe('ATR% and ADX filters', () => {
   it('rejects entry when ATR% is below threshold', async () => {
     // Very low volatility candles → ATR% will be tiny

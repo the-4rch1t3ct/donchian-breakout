@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
-import { donchian, donchianSeries } from '../src/indicators/donchian.js';
+import { donchian, donchianSeries, donchianWidthPct } from '../src/indicators/donchian.js';
+import type { DonchianResult } from '../src/indicators/donchian.js';
 import { makeCandle } from './helpers.js';
 
 function makePriceCandles(highs: number[], lows: number[]): ReturnType<typeof makeCandle>[] {
@@ -36,6 +37,27 @@ describe('Donchian Channel', () => {
     const result = donchian(candles, 3);
     expect(result.high).toBe(100);
     expect(result.low).toBe(100);
+  });
+
+  describe('donchianWidthPct', () => {
+    it('computes (upper - lower) / mid', () => {
+      const result: DonchianResult = { high: 110, low: 90, mid: 100 };
+      expect(donchianWidthPct(result)).toBe(0.2); // 20%
+    });
+
+    it('matches donchian output for synthetic candles', () => {
+      const candles = makePriceCandles([10, 12, 11, 15, 13, 14, 16, 12, 11, 10], [8, 9, 7, 10, 9, 11, 12, 8, 7, 6]);
+      const dc = donchian(candles, 5);
+      const width = donchianWidthPct(dc);
+      // last 5: high=16, low=6, mid=11 → (16-6)/11 = 10/11
+      expect(dc.mid).toBe(11);
+      expect(width).toBeCloseTo(10 / 11, 10);
+    });
+
+    it('returns 0 when mid <= 0', () => {
+      expect(donchianWidthPct({ high: 1, low: -1, mid: 0 })).toBe(0);
+      expect(donchianWidthPct({ high: 0, low: 0, mid: 0 })).toBe(0);
+    });
   });
 
   describe('donchianSeries', () => {

@@ -4,7 +4,7 @@ import type { IExchangeClient } from '../exchange/exchangeClient.js';
 import type { RiskService } from '../services/riskService.js';
 import type { ExecutionService } from '../services/executionService.js';
 import type { UniverseService } from '../services/universeService.js';
-import { donchian } from '../indicators/donchian.js';
+import { donchian, donchianWidthPct } from '../indicators/donchian.js';
 import { atr } from '../indicators/atr.js';
 import { adx } from '../indicators/adx.js';
 import type {
@@ -43,19 +43,32 @@ export class DonchianBreakout15m {
   }
 
   /**
-   * Main tick handler. Called once per completed 15m candle.
-   * candles15m: historical candles for this symbol ending with the just-closed candle.
-   * Must have enough history for indicators (at least 2*adxLength+1 and donchianLength).
+   * Per-tick context from runner (equity fetched once per 15m bar).
+   * When provided, strategy uses cached equity/dd/softBrake and does not call exchange.getEquity() or riskService.updateDailyDD().
    */
-  async onBar(symbol: string, candles15m: Candle[], timestampMs: number): Promise<void> {
+  async onBar(
+    symbol: string,
+    candles15m: Candle[],
+    timestampMs: number,
+    tickContext?: { equity: number; dd: number; softBrake: boolean },
+  ): Promise<void> {
     this.barIndex++;
 
-    const { dd, softBrake, hardKill } = await this.riskService.updateDailyDD(timestampMs);
+    let dd: number;
+    let softBrake: boolean;
 
-    if (hardKill) {
-      await this.riskService.executeHardKill(this.getOpenTrades());
-      this.openTrades.clear();
-      return;
+    if (tickContext) {
+      dd = tickContext.dd;
+      softBrake = tickContext.softBrake;
+    } else {
+      const result = await this.riskService.updateDailyDD(timestampMs);
+      dd = result.dd;
+      softBrake = result.softBrake;
+      if (result.hardKill) {
+        await this.riskService.executeHardKill(this.getOpenTrades());
+        this.openTrades.clear();
+        return;
+      }
     }
 
     const existingTrade = this.openTrades.get(symbol);
@@ -77,7 +90,7 @@ export class DonchianBreakout15m {
     if (!indicators) return;
 
     const currentCandle = candles15m[candles15m.length - 1];
-    const signal = this.checkEntrySignal(currentCandle, candles15m, indicators, softBrake);
+    const signal = this.checkEntrySignal(symbol, currentCandle, candles15m, indicators, softBrake);
     if (!signal) return;
 
     if (this.isOnCooldown(symbol, signal.side)) {
@@ -88,7 +101,7 @@ export class DonchianBreakout15m {
       return;
     }
 
-    const equity = await this.exchange.getEquity();
+    const equity = tickContext?.equity ?? (await this.exchange.getEquity());
     const sizeMult = this.riskService.getSizeMult();
     const stopDist = this.config.stopAtrMult * indicators.atr;
     const stopDistPct = stopDist / currentCandle.close;
@@ -97,6 +110,20 @@ export class DonchianBreakout15m {
     if (size <= 0) return;
 
     const positionSizeInUnits = size / currentCandle.close;
+    const orderNotional = positionSizeInUnits * currentCandle.close;
+
+    if (orderNotional < this.config.minNotionalPerOrder) {
+      this.logger.logSignal(symbol, signal.side, 'SKIPPED_TOO_SMALL', {
+        executionPath: 'SKIPPED_FILTERS',
+        details: { notional: orderNotional, minNotional: this.config.minNotionalPerOrder, sizeUnits: positionSizeInUnits },
+        riskSnapshot: {
+          equity, ddUtc: dd, riskPerTrade: this.config.riskPerTrade,
+          sizeMult, stopDist: stopDistPct, positionSize: positionSizeInUnits, leverage,
+        },
+      });
+      return;
+    }
+
     const riskAmount = equity * this.config.riskPerTrade * sizeMult;
 
     const canOpen = this.riskService.canOpenNew(
@@ -124,13 +151,7 @@ export class DonchianBreakout15m {
     }
 
     this.logger.logSignal(symbol, signal.side, 'ENTRY_SIGNAL', {
-      signalParams: {
-        N: this.config.donchianLength,
-        bufferBps: this.config.bufferBps,
-        atrPct: indicators.atrPct,
-        adx: indicators.adx,
-        candleRangeAtr: (currentCandle.high - currentCandle.low) / indicators.atr,
-      },
+      signalParams: this.signalParams(currentCandle, indicators),
       riskSnapshot: {
         equity,
         ddUtc: dd,
@@ -142,12 +163,9 @@ export class DonchianBreakout15m {
       },
     });
 
-    const { path, fill } = await this.executionService.executeEntrySim(
-      symbol,
-      signal.side,
-      positionSizeInUnits,
-      currentCandle.close,
-    );
+    const { path, fill } = this.config.mode === 'sim'
+      ? await this.executionService.executeEntrySim(symbol, signal.side, positionSizeInUnits, currentCandle.close)
+      : await this.executionService.executeEntry(symbol, signal.side, positionSizeInUnits, currentCandle.close);
 
     if (!fill.filled || !fill.fillPrice) {
       this.logger.logSignal(symbol, signal.side, 'ENTRY_NOT_FILLED', {
@@ -290,6 +308,7 @@ export class DonchianBreakout15m {
     try {
       const lookback = candles15m.slice(0, -1);
       const dc = donchian(lookback, this.config.donchianLength);
+      const widthPct = donchianWidthPct(dc);
       const atrVal = atr(candles15m, this.config.atrLength);
       const adxVal = adx(candles15m, this.config.adxLength);
       const price = candles15m[candles15m.length - 1].close;
@@ -300,10 +319,29 @@ export class DonchianBreakout15m {
         atr: atrVal,
         atrPct: atrVal / price,
         adx: adxVal,
+        widthPct,
       };
     } catch {
       return null;
     }
+  }
+
+  private signalParams(candle: Candle, indicators: IndicatorSnapshot): {
+    N: number;
+    bufferBps: number;
+    atrPct: number;
+    adx: number;
+    candleRangeAtr: number;
+    widthPct: number;
+  } {
+    return {
+      N: this.config.donchianLength,
+      bufferBps: this.config.bufferBps,
+      atrPct: indicators.atrPct,
+      adx: indicators.adx,
+      candleRangeAtr: (candle.high - candle.low) / indicators.atr,
+      widthPct: indicators.widthPct,
+    };
   }
 
   private computeCurrentAtr(candles15m: Candle[]): number {
@@ -315,6 +353,7 @@ export class DonchianBreakout15m {
   }
 
   private checkEntrySignal(
+    symbol: string,
     candle: Candle,
     candles15m: Candle[],
     indicators: IndicatorSnapshot,
@@ -325,40 +364,73 @@ export class DonchianBreakout15m {
     const longBreak = candle.close >= indicators.donchianHigh * (1 + bufferMult);
     const shortBreak = candle.close <= indicators.donchianLow * (1 - bufferMult);
 
-    if (!longBreak && !shortBreak) return null;
+    if (!longBreak && !shortBreak) {
+      this.logger.logSignal(symbol, '', 'NO_SIGNAL', {
+        executionPath: 'NO_SIGNAL',
+        details: { reason: 'no_breakout' },
+        signalParams: this.signalParams(candle, indicators),
+      });
+      return null;
+    }
 
     const side: Side = longBreak ? 'long' : 'short';
+
+    if (this.config.enableWidthFilter) {
+      const threshold = softBrake ? this.config.widthPctMinSoft : this.config.widthPctMin;
+      if (indicators.widthPct < threshold) {
+        this.logger.logSignal(symbol, side, 'SKIPPED_LOW_WIDTH_PCT', {
+          executionPath: 'SKIPPED_FILTERS',
+          details: {
+            widthPct: indicators.widthPct,
+            threshold,
+            softBrake,
+          },
+          signalParams: this.signalParams(candle, indicators),
+        });
+        return null;
+      }
+    }
 
     const minAtrPct = softBrake ? this.config.softBrakeMinAtrPct : this.config.minAtrPct;
     const minAdx = softBrake ? this.config.softBrakeMinAdx : this.config.minAdx;
     const maxRangeAtr = softBrake ? this.config.softBrakeMaxCandleRangeAtr : this.config.maxCandleRangeAtr;
 
     if (indicators.atrPct < minAtrPct) {
-      this.logger.logSignal(candles15m[candles15m.length - 1].timestamp.toString(), side, 'SKIPPED_LOW_ATR_PCT', {
+      this.logger.logSignal(symbol, side, 'SKIPPED_LOW_ATR_PCT', {
         executionPath: 'SKIPPED_FILTERS',
-        signalParams: {
-          N: this.config.donchianLength,
-          bufferBps: this.config.bufferBps,
+        signalParams: this.signalParams(candle, indicators),
+      });
+      return null;
+    }
+
+    const maxAtrPct = softBrake ? this.config.atrPctMaxSoft : this.config.atrPctMax;
+    if (Number.isFinite(maxAtrPct) && indicators.atrPct > maxAtrPct) {
+      this.logger.logSignal(symbol, side, 'SKIPPED_HIGH_ATR_PCT', {
+        executionPath: 'SKIPPED_FILTERS',
+        details: {
           atrPct: indicators.atrPct,
-          adx: indicators.adx,
-          candleRangeAtr: (candle.high - candle.low) / indicators.atr,
+          threshold: maxAtrPct,
+          softBrake,
         },
+        signalParams: this.signalParams(candle, indicators),
       });
       return null;
     }
 
     if (indicators.adx < minAdx) {
-      this.logger.logSignal(candles15m[candles15m.length - 1].timestamp.toString(), side, 'SKIPPED_LOW_ADX', {
+      this.logger.logSignal(symbol, side, 'SKIPPED_LOW_ADX', {
         executionPath: 'SKIPPED_FILTERS',
+        signalParams: this.signalParams(candle, indicators),
       });
       return null;
     }
 
     const candleRange = candle.high - candle.low;
     if (candleRange > maxRangeAtr * indicators.atr) {
-      this.logger.logSignal(candles15m[candles15m.length - 1].timestamp.toString(), side, 'SKIPPED_BLOWOFF_CANDLE', {
+      this.logger.logSignal(symbol, side, 'SKIPPED_BLOWOFF_CANDLE', {
         executionPath: 'SKIPPED_FILTERS',
         details: { candleRange, atr: indicators.atr, ratio: candleRange / indicators.atr },
+        signalParams: this.signalParams(candle, indicators),
       });
       return null;
     }

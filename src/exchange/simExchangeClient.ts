@@ -1,5 +1,5 @@
 import type { Candle, FillResult, OpenOrder, OrderBookTop, Position, Side } from '../types/index.js';
-import type { IExchangeClient } from './exchangeClient.js';
+import type { IExchangeClient, PlaceMarketableOptions } from './exchangeClient.js';
 
 interface SimPosition {
   symbol: string;
@@ -83,7 +83,12 @@ export class SimExchangeClient implements IExchangeClient {
     this.pendingOrders = [];
   }
 
-  async placeMarketable(symbol: string, side: Side, size: number): Promise<FillResult> {
+  async placeMarketable(
+    symbol: string,
+    side: Side,
+    size: number,
+    _options?: PlaceMarketableOptions,
+  ): Promise<FillResult> {
     const c = this.currentCandle.get(symbol);
     if (!c) return { filled: false };
 
@@ -153,6 +158,12 @@ export class SimExchangeClient implements IExchangeClient {
 
   async getRecentCandles1m(symbol: string, count: number): Promise<Candle[]> {
     return this.getCandles(symbol, 60_000, count);
+  }
+
+  async getMarkPrice(symbol: string): Promise<number> {
+    const c = this.currentCandle.get(symbol);
+    if (!c) throw new Error(`No current candle for ${symbol}`);
+    return c.close;
   }
 
   getCash(): number { return this.cash; }

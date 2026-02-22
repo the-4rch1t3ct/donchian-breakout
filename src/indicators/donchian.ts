@@ -26,6 +26,17 @@ export function donchian(candles: Candle[], length: number): DonchianResult {
 }
 
 /**
+ * Donchian channel width as a fraction of mid: (upper - lower) / mid.
+ * Used as a quality filter (e.g. require width >= 0.8% to avoid flat channels).
+ * If mid <= 0, returns 0.
+ */
+export function donchianWidthPct(result: DonchianResult): number {
+  const mid = result.mid;
+  if (mid <= 0) return 0;
+  return (result.high - result.low) / mid;
+}
+
+/**
  * Compute full Donchian series for backtesting.
  * Returns an array aligned to candles (first length-1 entries are null).
  */

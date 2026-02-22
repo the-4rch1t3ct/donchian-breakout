@@ -1,4 +1,5 @@
 export type Side = 'long' | 'short';
+export type TradingMode = 'sim' | 'paper' | 'live';
 
 export interface Candle {
   timestamp: number;   // unix ms
@@ -15,6 +16,7 @@ export interface OrderBookTop {
   bidSize: number;
   askSize: number;
   spreadBps: number;
+  timestamp?: number;  // unix ms, present on live data
 }
 
 export interface Position {
@@ -51,6 +53,7 @@ export interface IndicatorSnapshot {
   atr: number;
   atrPct: number;
   adx: number;
+  widthPct: number;
 }
 
 export interface SignalParams {
@@ -59,9 +62,11 @@ export interface SignalParams {
   atrPct: number;
   adx: number;
   candleRangeAtr: number;
+  widthPct: number;
 }
 
 export type ExecutionPath =
+  | 'NO_SIGNAL'
   | 'MAKER_FILLED'
   | 'MAKER_TIMEOUT_TAKER'
   | 'SKIPPED_BAD_MICROSTRUCTURE'
@@ -74,6 +79,12 @@ export type ExitReason =
   | 'DAILY_KILL_SWITCH'
   | 'MANUAL'
   | 'EXCHANGE_ERROR';
+
+export type LogModule =
+  | 'DONCHIAN_15M_CLOSE'
+  | 'EXCHANGE'
+  | 'RUNNER'
+  | 'RISK';
 
 export interface TradeState {
   symbol: string;
@@ -103,7 +114,7 @@ export interface LogEntry {
   timestamp: string;
   symbol: string;
   side: Side | '';
-  module: 'DONCHIAN_15M_CLOSE';
+  module: LogModule;
   event: string;
   signalParams?: SignalParams;
   executionPath?: ExecutionPath;

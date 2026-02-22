@@ -1,5 +1,8 @@
 node_modules/
 dist/
 logs/
+data/
 *.log
 .env
+.env.local
+.env.monitor

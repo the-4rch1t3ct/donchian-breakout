@@ -62,14 +62,15 @@ export class RiskService {
     return (currentEquity - this.dailyState.equityAtDayStart) / this.dailyState.equityAtDayStart;
   }
 
-  async updateDailyDD(timestampMs?: number): Promise<{ dd: number; softBrake: boolean; hardKill: boolean }> {
+  async updateDailyDD(timestampMs?: number, equityOverride?: number): Promise<{ dd: number; softBrake: boolean; hardKill: boolean }> {
     const now = timestampMs ?? Date.now();
 
     if (this.checkDayBoundary(now)) {
-      await this.initDay(now);
+      const eq = equityOverride ?? await this.exchange.getEquity();
+      await this.initDay(now, eq);
     }
 
-    const equity = await this.exchange.getEquity();
+    const equity = equityOverride ?? await this.exchange.getEquity();
     const dd = this.computeDD(equity);
 
     const hardKill = dd <= this.config.hardDdThreshold;
