@@ -53,6 +53,7 @@ export class HyperliquidExchangeClient implements IExchangeClient {
 
   private assetIndexMap = new Map<string, number>();
   private szDecimalsMap = new Map<string, number>();
+  private pxDecimalsMap = new Map<string, number>();
   private orderAssetMap = new Map<string, number>(); // orderId → assetIndex for cancel
 
   constructor(opts: HlClientOptions) {
@@ -78,7 +79,7 @@ export class HyperliquidExchangeClient implements IExchangeClient {
     });
   }
 
-  /** Must be called once before using the client. Fetches asset universe. */
+  /** Must be called once before using the client. Fetches asset universe + best-effort price decimals. */
   async init(): Promise<void> {
     const meta = await this.info.meta();
     for (let i = 0; i < meta.universe.length; i++) {
@@ -86,6 +87,28 @@ export class HyperliquidExchangeClient implements IExchangeClient {
       this.assetIndexMap.set(asset.name, i);
       this.szDecimalsMap.set(asset.name, asset.szDecimals);
     }
+
+    // Best-effort px decimals inference (HL will reject invalid tick prices).
+    // meta() does not expose pxDecimals; infer from midPx strings.
+    try {
+      const mac = await this.info.metaAndAssetCtxs();
+      const u = mac[0]?.universe ?? [];
+      const ctxs = mac[1] ?? [];
+      for (let i = 0; i < u.length; i++) {
+        const name = u[i]?.name;
+        const midPx = ctxs[i]?.midPx;
+        if (!name || !midPx) continue;
+        const s = String(midPx);
+        const dot = s.indexOf('.');
+        const dec = dot >= 0 ? (s.length - dot - 1) : 0;
+        if (Number.isFinite(dec)) {
+          this.pxDecimalsMap.set(name, Math.max(0, Math.min(8, dec)));
+        }
+      }
+    } catch {
+      // ignore
+    }
+
     this.logger.logEvent('EXCHANGE', 'ASSET_MAP_LOADED', '', '', {
       details: { assetCount: meta.universe.length },
     });
@@ -100,6 +123,11 @@ export class HyperliquidExchangeClient implements IExchangeClient {
   private roundSize(symbol: string, size: number): string {
     const dec = this.szDecimalsMap.get(symbol) ?? 4;
     return size.toFixed(dec);
+  }
+
+  private roundPrice(symbol: string, price: number): string {
+    const dec = this.pxDecimalsMap.get(symbol) ?? 6;
+    return price.toFixed(dec);
   }
 
   private generateCloid(): `0x${string}` {
@@ -189,8 +217,7 @@ export class HyperliquidExchangeClient implements IExchangeClient {
         orders: [{
           a: assetIndex,
           b: side === 'long',
-          // Hyperliquid rejects too-many-decimals on low-priced coins (422 deserialize).
-          p: price.toFixed(6),
+          p: this.roundPrice(symbol, price),
           s: this.roundSize(symbol, size),
           r: false,
           t: { limit: { tif } },
@@ -283,7 +310,7 @@ export class HyperliquidExchangeClient implements IExchangeClient {
         orders: [{
           a: assetIndex,
           b: side === 'long',
-          p: price.toFixed(6),
+          p: this.roundPrice(symbol, price),
           s: this.roundSize(symbol, size),
           r: false,
           t: { limit: { tif: 'Ioc' as const } },
@@ -328,16 +355,18 @@ export class HyperliquidExchangeClient implements IExchangeClient {
     const assetIndex = this.getAssetIndex(symbol);
     const cloid = this.generateCloid();
 
+    const tp = this.roundPrice(symbol, triggerPx);
+
     try {
       const result = await this.hl.order({
         orders: [{
           a: assetIndex,
           b: closeSide === 'long',
           // SDK schema requires p>0 even for trigger orders; use triggerPx.
-          p: triggerPx.toFixed(6),
+          p: tp,
           s: this.roundSize(symbol, size),
           r: true, // reduce-only
-          t: { trigger: { isMarket: true, triggerPx: triggerPx.toFixed(6), tpsl } },
+          t: { trigger: { isMarket: true, triggerPx: tp, tpsl } },
           c: cloid,
         }],
         // Make it follow position size changes.
@@ -539,7 +568,7 @@ export class HyperliquidExchangeClient implements IExchangeClient {
         orders: [{
           a: assetIndex,
           b: closeSide === 'long',
-          p: price.toFixed(6),
+          p: this.roundPrice(symbol, price),
           s: this.roundSize(symbol, size),
           r: true, // reduce-only
           t: { limit: { tif: 'Ioc' as const } },
