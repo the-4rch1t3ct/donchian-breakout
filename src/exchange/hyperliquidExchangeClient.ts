@@ -54,6 +54,7 @@ export class HyperliquidExchangeClient implements IExchangeClient {
   private assetIndexMap = new Map<string, number>();
   private szDecimalsMap = new Map<string, number>();
   private pxDecimalsMap = new Map<string, number>();
+  private pxTickMap = new Map<string, bigint>();
   private orderAssetMap = new Map<string, number>(); // orderId → assetIndex for cancel
 
   constructor(opts: HlClientOptions) {
@@ -128,6 +129,80 @@ export class HyperliquidExchangeClient implements IExchangeClient {
   private roundPrice(symbol: string, price: number): string {
     const dec = this.pxDecimalsMap.get(symbol) ?? 6;
     return price.toFixed(dec);
+  }
+
+  private parsePriceToInt(symbol: string, price: number): { value: bigint; scale: bigint } {
+    const dec = this.pxDecimalsMap.get(symbol) ?? 6;
+    const scale = BigInt(10 ** Math.min(8, Math.max(0, dec)));
+    const v = BigInt(Math.round(price * Number(scale)));
+    return { value: v, scale };
+  }
+
+  private async getPxTick(symbol: string): Promise<bigint | null> {
+    const cached = this.pxTickMap.get(symbol);
+    if (cached !== undefined) return cached;
+
+    try {
+      const book = await this.info.l2Book({ coin: symbol });
+      const levels: string[] = [];
+      for (const [px] of (book?.levels?.[0] ?? [])) levels.push(String(px)); // bids
+      for (const [px] of (book?.levels?.[1] ?? [])) levels.push(String(px)); // asks
+
+      const dec = this.pxDecimalsMap.get(symbol) ?? 6;
+      const scale = BigInt(10 ** Math.min(8, Math.max(0, dec)));
+      const ints = levels
+        .map((s) => {
+          const n = Number(s);
+          if (!Number.isFinite(n)) return null;
+          return BigInt(Math.round(n * Number(scale)));
+        })
+        .filter((x): x is bigint => x !== null)
+        .sort((a, b) => (a < b ? -1 : a > b ? 1 : 0));
+
+      let minDiff: bigint | null = null;
+      for (let i = 1; i < ints.length; i++) {
+        const d = ints[i] - ints[i - 1];
+        if (d <= 0n) continue;
+        if (minDiff === null || d < minDiff) minDiff = d;
+      }
+
+      if (minDiff && minDiff > 0n) {
+        this.pxTickMap.set(symbol, minDiff);
+        return minDiff;
+      }
+    } catch {
+      // ignore
+    }
+
+    this.pxTickMap.set(symbol, 0n);
+    return null;
+  }
+
+  private async formatPrice(
+    symbol: string,
+    price: number,
+    mode: 'down' | 'up' | 'nearest' = 'nearest',
+  ): Promise<string> {
+    const dec = this.pxDecimalsMap.get(symbol) ?? 6;
+    const scale = BigInt(10 ** Math.min(8, Math.max(0, dec)));
+
+    const tick = await this.getPxTick(symbol);
+    if (!tick) return price.toFixed(dec);
+
+    const raw = BigInt(Math.round(price * Number(scale)));
+    const t = tick;
+
+    let aligned: bigint;
+    if (mode === 'nearest') {
+      const half = t / 2n;
+      aligned = ((raw + half) / t) * t;
+    } else if (mode === 'up') {
+      aligned = ((raw + t - 1n) / t) * t;
+    } else {
+      aligned = (raw / t) * t;
+    }
+
+    return (Number(aligned) / Number(scale)).toFixed(dec);
   }
 
   private generateCloid(): `0x${string}` {
@@ -213,11 +288,17 @@ export class HyperliquidExchangeClient implements IExchangeClient {
     const tif = postOnly ? 'Alo' as const : 'Gtc' as const;
 
     try {
+      const px = await this.formatPrice(
+        symbol,
+        price,
+        side === 'long' ? 'down' : 'up',
+      );
+
       const result = await this.hl.order({
         orders: [{
           a: assetIndex,
           b: side === 'long',
-          p: this.roundPrice(symbol, price),
+          p: px,
           s: this.roundSize(symbol, size),
           r: false,
           t: { limit: { tif } },
@@ -306,11 +387,17 @@ export class HyperliquidExchangeClient implements IExchangeClient {
     const cloid = this.generateCloid();
 
     try {
+      const px = await this.formatPrice(
+        symbol,
+        price,
+        side === 'long' ? 'up' : 'down',
+      );
+
       const result = await this.hl.order({
         orders: [{
           a: assetIndex,
           b: side === 'long',
-          p: this.roundPrice(symbol, price),
+          p: px,
           s: this.roundSize(symbol, size),
           r: false,
           t: { limit: { tif: 'Ioc' as const } },
@@ -355,7 +442,7 @@ export class HyperliquidExchangeClient implements IExchangeClient {
     const assetIndex = this.getAssetIndex(symbol);
     const cloid = this.generateCloid();
 
-    const tp = this.roundPrice(symbol, triggerPx);
+    const tp = await this.formatPrice(symbol, triggerPx, 'nearest');
 
     try {
       const result = await this.hl.order({
@@ -564,11 +651,17 @@ export class HyperliquidExchangeClient implements IExchangeClient {
     const cloid = this.generateCloid();
 
     try {
+      const px = await this.formatPrice(
+        symbol,
+        price,
+        closeSide === 'long' ? 'up' : 'down',
+      );
+
       const result = await this.hl.order({
         orders: [{
           a: assetIndex,
           b: closeSide === 'long',
-          p: this.roundPrice(symbol, price),
+          p: px,
           s: this.roundSize(symbol, size),
           r: true, // reduce-only
           t: { limit: { tif: 'Ioc' as const } },
