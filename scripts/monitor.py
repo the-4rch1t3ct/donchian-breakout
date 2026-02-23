@@ -50,7 +50,8 @@ def send_alert(text):
     if not TELEGRAM_TARGET:
         print(f"[{utc_now_iso()}] ALERT (no DB_TELEGRAM_TARGET): {text}", file=sys.stderr)
         return False
-    cmd = ["clawdbot", "message", "send", "--target", TELEGRAM_TARGET, "--message", text]
+    claw = os.environ.get("CLAWDBOT_BIN", "/home/botadmin/.npm-global/bin/clawdbot")
+    cmd = [claw, "message", "send", "--target", TELEGRAM_TARGET, "--message", text]
     try:
         r = subprocess.run(cmd, capture_output=True, text=True)
         if r.returncode != 0:

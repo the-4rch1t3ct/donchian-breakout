@@ -189,7 +189,8 @@ export class HyperliquidExchangeClient implements IExchangeClient {
         orders: [{
           a: assetIndex,
           b: side === 'long',
-          p: price.toString(),
+          // Hyperliquid rejects too-many-decimals on low-priced coins (422 deserialize).
+          p: price.toFixed(6),
           s: this.roundSize(symbol, size),
           r: false,
           t: { limit: { tif } },
