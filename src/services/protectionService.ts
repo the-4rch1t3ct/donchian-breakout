@@ -92,26 +92,56 @@ export class ProtectionService {
     let stopPx = params.stopPx ?? existing.stopPx;
     let tpPx = params.tpPx ?? existing.tpPx;
 
-    // If we still don't have a stop/tp, compute from recent ATR.
-    if (!stopPx || !tpPx) {
-      const candles = await this.exchange.getCandles(symbol, this.config.signalTimeframeMs, 60);
-      const atrVal = candles.length >= this.config.atrLength + 2
-        ? atr(candles, this.config.atrLength)
-        : 0;
-      if (atrVal <= 0) {
-        this.logger.logEvent('RISK', 'TPSL_REPAIR_FAILED_NO_ATR', symbol, params.side, {
-          details: { msg: 'Could not compute ATR for fallback TP/SL' },
-        });
-        return;
-      }
-      const fallback = this.computeFallbackStopTp(params.entryPrice, params.side, atrVal);
-      stopPx = fallback.stopPx;
-      tpPx = fallback.tpPx;
-    }
-
-    // Check open orders for existing SL/TP.
+    // Pull open orders early so we can infer TP/SL from existing triggers even
+    // when candle/ATR fetching is temporarily unavailable.
     const openOrders = await this.exchange.getOpenOrders(symbol);
     const openById = new Set(openOrders.map(o => o.orderId));
+
+    const isLong = params.side === 'long';
+
+    const triggers = openOrders
+      .filter(o => Boolean(o.isTrigger))
+      .filter(o => o.reduceOnly)
+      .filter(o => typeof o.triggerPx === 'number' && Number.isFinite(o.triggerPx));
+
+    // If we don't have stop/tp yet, infer from existing triggers around entry.
+    if (!stopPx || !tpPx) {
+      const pxs = triggers.map(o => o.triggerPx as number);
+      const below = pxs.filter(px => px < params.entryPrice).sort((a, b) => b - a);
+      const above = pxs.filter(px => px > params.entryPrice).sort((a, b) => a - b);
+
+      if (isLong) {
+        stopPx = stopPx ?? below[0]; // closest below
+        tpPx = tpPx ?? above[0]; // closest above
+      } else {
+        // short: stop above, tp below
+        stopPx = stopPx ?? above[0];
+        tpPx = tpPx ?? below[0];
+      }
+    }
+
+    // If we still don't have stop/tp, compute from recent ATR.
+    if (!stopPx || !tpPx) {
+      try {
+        const candles = await this.exchange.getCandles(symbol, this.config.signalTimeframeMs, 60);
+        const atrVal = candles.length >= this.config.atrLength + 2
+          ? atr(candles, this.config.atrLength)
+          : 0;
+        if (atrVal > 0) {
+          const fallback = this.computeFallbackStopTp(params.entryPrice, params.side, atrVal);
+          stopPx = stopPx ?? fallback.stopPx;
+          tpPx = tpPx ?? fallback.tpPx;
+        } else {
+          this.logger.logEvent('RISK', 'TPSL_REPAIR_FAILED_NO_ATR', symbol, params.side, {
+            details: { msg: 'Could not compute ATR for fallback TP/SL' },
+          });
+        }
+      } catch (e: any) {
+        this.logger.logEvent('RISK', 'TPSL_REPAIR_FAILED_NO_ATR', symbol, params.side, {
+          details: { msg: 'Could not fetch candles for fallback TP/SL', err: String(e?.message ?? e) },
+        });
+      }
+    }
 
     // Prefer meta-linked orderIds if still open.
     let newSl = (existing.sl_orderId && openById.has(String(existing.sl_orderId)))
@@ -124,12 +154,6 @@ export class ProtectionService {
     // If HL doesn't tag TP/SL (tpsl === undefined), detect by triggerPx proximity.
     // Also prevents runaway duplicates if we restart and lose stored orderIds.
     const relTol = 0.002; // 20 bps; plenty for tick rounding + string formatting.
-    const triggers = openOrders
-      .filter(o => Boolean(o.isTrigger))
-      .filter(o => o.reduceOnly)
-      .filter(o => typeof o.triggerPx === 'number' && Number.isFinite(o.triggerPx));
-
-    const isLong = params.side === 'long';
 
     function relDiff(a: number, b: number): number {
       return Math.abs(a - b) / Math.max(1e-12, Math.abs(b));
@@ -147,7 +171,7 @@ export class ProtectionService {
     }
 
     // Only attempt match if we don't already have ids.
-    if (!newSl) {
+    if (!newSl && typeof stopPx === 'number' && Number.isFinite(stopPx)) {
       const m = bestMatch(stopPx);
       if (m.keep) newSl = m.keep;
       // cancel duplicate SLs at same triggerPx
@@ -156,7 +180,7 @@ export class ProtectionService {
       }
     }
 
-    if (!newTp) {
+    if (!newTp && typeof tpPx === 'number' && Number.isFinite(tpPx)) {
       const m = bestMatch(tpPx);
       if (m.keep) newTp = m.keep;
       for (const id of m.extras) {
@@ -170,7 +194,11 @@ export class ProtectionService {
 
     // Repair missing orders.
     if (!newSl) {
-      if (triggerCount >= 4) {
+      if (!(typeof stopPx === 'number' && Number.isFinite(stopPx))) {
+        this.logger.logEvent('RISK', 'TPSL_REPAIR_SKIPPED_NO_STOPPX', symbol, params.side, {
+          details: { stopPx, tpPx },
+        });
+      } else if (triggerCount >= 4) {
         this.logger.logEvent('RISK', 'TPSL_SKIPPED_TOO_MANY_TRIGGERS', symbol, params.side, {
           details: { triggerCount, stopPx, tpPx },
         });
@@ -181,7 +209,11 @@ export class ProtectionService {
     }
 
     if (!newTp) {
-      if (triggerCount >= 4) {
+      if (!(typeof tpPx === 'number' && Number.isFinite(tpPx))) {
+        this.logger.logEvent('RISK', 'TPSL_REPAIR_SKIPPED_NO_TPPX', symbol, params.side, {
+          details: { stopPx, tpPx },
+        });
+      } else if (triggerCount >= 4) {
         this.logger.logEvent('RISK', 'TPSL_SKIPPED_TOO_MANY_TRIGGERS', symbol, params.side, {
           details: { triggerCount, stopPx, tpPx },
         });
