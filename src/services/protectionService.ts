@@ -113,25 +113,82 @@ export class ProtectionService {
     const openOrders = await this.exchange.getOpenOrders(symbol);
     const openById = new Set(openOrders.map(o => o.orderId));
 
-    const slId = (existing.sl_orderId && openById.has(String(existing.sl_orderId)))
+    // Prefer meta-linked orderIds if still open.
+    let newSl = (existing.sl_orderId && openById.has(String(existing.sl_orderId)))
       ? String(existing.sl_orderId)
       : undefined;
-    const tpId = (existing.tp_orderId && openById.has(String(existing.tp_orderId)))
+    let newTp = (existing.tp_orderId && openById.has(String(existing.tp_orderId)))
       ? String(existing.tp_orderId)
       : undefined;
 
-    let newSl = slId;
-    let newTp = tpId;
+    // If HL doesn't tag TP/SL (tpsl === undefined), detect by triggerPx proximity.
+    // Also prevents runaway duplicates if we restart and lose stored orderIds.
+    const relTol = 0.002; // 20 bps; plenty for tick rounding + string formatting.
+    const triggers = openOrders
+      .filter(o => Boolean(o.isTrigger))
+      .filter(o => o.reduceOnly)
+      .filter(o => typeof o.triggerPx === 'number' && Number.isFinite(o.triggerPx));
 
-    // Repair missing orders.
+    const isLong = params.side === 'long';
+
+    function relDiff(a: number, b: number): number {
+      return Math.abs(a - b) / Math.max(1e-12, Math.abs(b));
+    }
+
+    function bestMatch(targetPx: number): { keep?: string; extras: string[] } {
+      const matches = triggers
+        .filter(o => relDiff(o.triggerPx as number, targetPx) <= relTol)
+        .map(o => ({ id: o.orderId, d: relDiff(o.triggerPx as number, targetPx) }))
+        .sort((x, y) => x.d - y.d);
+      if (matches.length === 0) return { extras: [] };
+      const keep = matches[0].id;
+      const extras = matches.slice(1).map(m => m.id);
+      return { keep, extras };
+    }
+
+    // Only attempt match if we don't already have ids.
     if (!newSl) {
-      const r = await this.exchange.placeTriggerTpsl(symbol, params.side, params.size, stopPx, 'sl');
-      if (r.orderId) newSl = r.orderId;
+      const m = bestMatch(stopPx);
+      if (m.keep) newSl = m.keep;
+      // cancel duplicate SLs at same triggerPx
+      for (const id of m.extras) {
+        try { await this.exchange.cancel(id); } catch { /* ignore */ }
+      }
     }
 
     if (!newTp) {
-      const r = await this.exchange.placeTriggerTpsl(symbol, params.side, params.size, tpPx, 'tp');
-      if (r.orderId) newTp = r.orderId;
+      const m = bestMatch(tpPx);
+      if (m.keep) newTp = m.keep;
+      for (const id of m.extras) {
+        try { await this.exchange.cancel(id); } catch { /* ignore */ }
+      }
+    }
+
+    // Final safety: if HL returned multiple trigger orders but none match, don't spam new ones.
+    // (Better to alert than to stack reduce-only triggers.)
+    const triggerCount = triggers.length;
+
+    // Repair missing orders.
+    if (!newSl) {
+      if (triggerCount >= 4) {
+        this.logger.logEvent('RISK', 'TPSL_SKIPPED_TOO_MANY_TRIGGERS', symbol, params.side, {
+          details: { triggerCount, stopPx, tpPx },
+        });
+      } else {
+        const r = await this.exchange.placeTriggerTpsl(symbol, params.side, params.size, stopPx, 'sl');
+        if (r.orderId) newSl = r.orderId;
+      }
+    }
+
+    if (!newTp) {
+      if (triggerCount >= 4) {
+        this.logger.logEvent('RISK', 'TPSL_SKIPPED_TOO_MANY_TRIGGERS', symbol, params.side, {
+          details: { triggerCount, stopPx, tpPx },
+        });
+      } else {
+        const r = await this.exchange.placeTriggerTpsl(symbol, params.side, params.size, tpPx, 'tp');
+        if (r.orderId) newTp = r.orderId;
+      }
     }
 
     this.upsertMeta(symbol, {
