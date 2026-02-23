@@ -4,6 +4,7 @@ import type { IExchangeClient } from '../exchange/exchangeClient.js';
 import type { RiskService } from '../services/riskService.js';
 import type { ExecutionService } from '../services/executionService.js';
 import type { UniverseService } from '../services/universeService.js';
+import type { ProtectionService } from '../services/protectionService.js';
 import { donchian, donchianWidthPct } from '../indicators/donchian.js';
 import { atr } from '../indicators/atr.js';
 import { adx } from '../indicators/adx.js';
@@ -28,6 +29,7 @@ export class DonchianBreakout15m {
     private riskService: RiskService,
     private executionService: ExecutionService,
     private universeService: UniverseService,
+    private protectionService?: ProtectionService,
   ) {}
 
   getOpenTrades(): TradeState[] {
@@ -215,6 +217,23 @@ export class DonchianBreakout15m {
         leverage,
       },
     });
+
+    // Immediately ensure on-exchange SL/TP exist.
+    const R = Math.abs(trade.entryPrice - trade.initialStop);
+    const tpPx = trade.side === 'long'
+      ? trade.entryPrice + (this.config.tpRMultiple * R)
+      : trade.entryPrice - (this.config.tpRMultiple * R);
+
+    if (this.protectionService && this.config.mode !== 'sim') {
+      await this.protectionService.ensureForPosition({
+        symbol: trade.symbol,
+        side: trade.side,
+        size: trade.size,
+        entryPrice: trade.entryPrice,
+        stopPx: trade.initialStop,
+        tpPx,
+      });
+    }
   }
 
   private async manageExistingPosition(
@@ -374,6 +393,21 @@ export class DonchianBreakout15m {
     }
 
     const side: Side = longBreak ? 'long' : 'short';
+
+    // Late-breakout guard: if price already ran too far beyond the band, skip.
+    if (Number.isFinite(this.config.maxBreakoutAtrMult) && this.config.maxBreakoutAtrMult > 0) {
+      const dist = side === 'long'
+        ? (candle.close - indicators.donchianHigh) / indicators.atr
+        : (indicators.donchianLow - candle.close) / indicators.atr;
+      if (dist > this.config.maxBreakoutAtrMult) {
+        this.logger.logSignal(symbol, side, 'SKIPPED_LATE_BREAKOUT', {
+          executionPath: 'SKIPPED_FILTERS',
+          details: { distAtr: dist, maxDistAtr: this.config.maxBreakoutAtrMult },
+          signalParams: this.signalParams(candle, indicators),
+        });
+        return null;
+      }
+    }
 
     if (this.config.enableWidthFilter) {
       const threshold = softBrake ? this.config.widthPctMinSoft : this.config.widthPctMin;

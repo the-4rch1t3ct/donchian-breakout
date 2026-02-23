@@ -1,7 +1,7 @@
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { InfoClient, HttpTransport } from '@nktkas/hyperliquid';
-import type { IExchangeClient, PlaceMarketableOptions } from './exchangeClient.js';
+import type { IExchangeClient, PlaceMarketableOptions, TpslType } from './exchangeClient.js';
 import type { Candle, FillResult, OpenOrder, OrderBookTop, Position, Side } from '../types/index.js';
 import type { StrategyLogger } from '../logger.js';
 
@@ -43,6 +43,7 @@ export class PaperExchangeClient implements IExchangeClient {
   private makerFeeBps: number;
 
   private latestPrices = new Map<string, number>();
+  private pendingOrders: OpenOrder[] = [];
 
   constructor(opts: PaperClientOptions) {
     this.logger = opts.logger;
@@ -150,8 +151,8 @@ export class PaperExchangeClient implements IExchangeClient {
     };
   }
 
-  async cancel(_orderId: string): Promise<void> {
-    // Paper: no resting orders to cancel
+  async cancel(orderId: string): Promise<void> {
+    this.pendingOrders = this.pendingOrders.filter(o => o.orderId !== orderId);
   }
 
   async placeMarketable(
@@ -205,12 +206,42 @@ export class PaperExchangeClient implements IExchangeClient {
     return this.state.cash + unrealized;
   }
 
-  async getOpenOrders(_symbol?: string): Promise<OpenOrder[]> {
-    return []; // paper: no resting orders
+  async placeTriggerTpsl(
+    symbol: string,
+    positionSide: Side,
+    size: number,
+    triggerPx: number,
+    tpsl: TpslType,
+  ): Promise<{ orderId?: string }> {
+    const closeSide: Side = positionSide === 'long' ? 'short' : 'long';
+    const oid = this.nextOrderId();
+    this.pendingOrders.push({
+      orderId: oid,
+      symbol,
+      side: closeSide,
+      price: triggerPx,
+      size,
+      postOnly: false,
+      reduceOnly: true,
+      isTrigger: true,
+      triggerPx,
+      tpsl,
+    });
+    return { orderId: oid };
   }
 
-  async cancelAll(_symbol?: string): Promise<void> {
-    // paper: no resting orders
+  async getOpenOrders(symbol?: string): Promise<OpenOrder[]> {
+    return symbol
+      ? this.pendingOrders.filter(o => o.symbol === symbol)
+      : [...this.pendingOrders];
+  }
+
+  async cancelAll(symbol?: string): Promise<void> {
+    if (!symbol) {
+      this.pendingOrders = [];
+      return;
+    }
+    this.pendingOrders = this.pendingOrders.filter(o => o.symbol !== symbol);
   }
 
   async closePosition(symbol: string, side: Side, size: number): Promise<FillResult> {

@@ -4,6 +4,7 @@ import { StrategyLogger } from './logger.js';
 import { RiskService } from './services/riskService.js';
 import { ExecutionService } from './services/executionService.js';
 import { UniverseService } from './services/universeService.js';
+import { ProtectionService } from './services/protectionService.js';
 import { Runner, createExchangeClient } from './runner.js';
 import type { TradingMode } from './types/index.js';
 
@@ -22,6 +23,7 @@ async function main(): Promise<void> {
   const riskService = new RiskService(CONFIG, logger, exchange);
   const executionService = new ExecutionService(CONFIG, logger, exchange);
   const universeService = new UniverseService(CONFIG, logger);
+  const protectionService = new ProtectionService(CONFIG, logger, exchange);
 
   const runner = new Runner({
     config: CONFIG,
@@ -30,6 +32,7 @@ async function main(): Promise<void> {
     riskService,
     executionService,
     universeService,
+    protectionService,
     mode,
   });
 

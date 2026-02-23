@@ -1,5 +1,5 @@
 import type { Candle, FillResult, OpenOrder, OrderBookTop, Position, Side } from '../types/index.js';
-import type { IExchangeClient, PlaceMarketableOptions } from './exchangeClient.js';
+import type { IExchangeClient, PlaceMarketableOptions, TpslType } from './exchangeClient.js';
 
 interface SimPosition {
   symbol: string;
@@ -105,6 +105,31 @@ export class SimExchangeClient implements IExchangeClient {
       fees,
       slippageBps: this.slippageBps,
     };
+  }
+
+  async placeTriggerTpsl(
+    symbol: string,
+    positionSide: Side,
+    size: number,
+    triggerPx: number,
+    tpsl: TpslType,
+  ): Promise<{ orderId?: string }> {
+    // Sim: record as an open order (not executed).
+    const closeSide: Side = positionSide === 'long' ? 'short' : 'long';
+    const oid = String(++this.orderIdCounter);
+    this.pendingOrders.push({
+      orderId: oid,
+      symbol,
+      side: closeSide,
+      price: triggerPx,
+      size,
+      postOnly: false,
+      reduceOnly: true,
+      isTrigger: true,
+      triggerPx,
+      tpsl,
+    });
+    return { orderId: oid };
   }
 
   async getPositions(): Promise<Position[]> {

@@ -40,6 +40,7 @@ export const CONFIG = {
 
   // ── Entry signal ──────────────────────────────────────
   bufferBps: 3,                 // configurable 2–8
+  maxBreakoutAtrMult: envFloat('MAX_BREAKOUT_ATR_MULT', Infinity),
 
   // ── Donchian width filter (optional, off by default) ───
   enableWidthFilter: process.env.ENABLE_WIDTH_FILTER === 'true',
@@ -61,9 +62,10 @@ export const CONFIG = {
   // ── Cooldown ──────────────────────────────────────────
   cooldownBars: 5,
 
-  // ── Stops ─────────────────────────────────────────────
+  // ── Stops / exits ─────────────────────────────────────
   stopAtrMult: 2.0,             // configurable 1.8–2.5
   trailAtrMult: 3.0,            // configurable 2.5–3.5
+  tpRMultiple: envFloat('TP_R_MULTIPLE', 1.2),
 
   // ── Sizing / risk (env-overridable for first-24h conservatism) ─
   riskPerTrade: envFloat('RISK_PER_TRADE', 0.0025),

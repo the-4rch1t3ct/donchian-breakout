@@ -5,6 +5,7 @@ import { SimExchangeClient } from '../src/exchange/simExchangeClient.js';
 import { RiskService } from '../src/services/riskService.js';
 import { ExecutionService } from '../src/services/executionService.js';
 import { UniverseService } from '../src/services/universeService.js';
+import { ProtectionService } from '../src/services/protectionService.js';
 import { Runner, createExchangeClient } from '../src/runner.js';
 import { makeCandle } from './helpers.js';
 import type { IExchangeClient } from '../src/exchange/exchangeClient.js';
@@ -20,7 +21,8 @@ function makeSimDeps(overrides: Partial<typeof CONFIG> = {}) {
   const riskService = new RiskService(config, logger, exchange);
   const executionService = new ExecutionService(config, logger, exchange);
   const universeService = new UniverseService(config, logger);
-  return { config, logger, exchange, riskService, executionService, universeService };
+  const protectionService = new ProtectionService(config, logger, exchange);
+  return { config, logger, exchange, riskService, executionService, universeService, protectionService };
 }
 
 describe('createExchangeClient', () => {

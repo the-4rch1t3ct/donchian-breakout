@@ -14,6 +14,7 @@ export interface RunnerDeps {
   riskService: RiskService;
   executionService: ExecutionService;
   universeService: UniverseService;
+  protectionService: import('./services/protectionService.js').ProtectionService;
   mode: TradingMode;
 }
 
@@ -28,6 +29,7 @@ export class Runner {
   private universeService: UniverseService;
   private logger: StrategyLogger;
   private config: Config;
+  private protectionService: import('./services/protectionService.js').ProtectionService;
   private mode: TradingMode;
   private running = false;
   private shutdownResolve: (() => void) | null = null;
@@ -38,6 +40,7 @@ export class Runner {
     this.exchange = deps.exchange;
     this.riskService = deps.riskService;
     this.universeService = deps.universeService;
+    this.protectionService = deps.protectionService;
     this.mode = deps.mode;
 
     this.strategy = new DonchianBreakout15m(
@@ -47,6 +50,7 @@ export class Runner {
       deps.riskService,
       deps.executionService,
       deps.universeService,
+      deps.protectionService,
     );
   }
 
@@ -185,6 +189,15 @@ export class Runner {
           details: { error: String(err) },
         });
       }
+    }
+
+    // Repair any naked positions (missing SL/TP) every tick.
+    try {
+      await this.protectionService.scanAndRepair();
+    } catch (err) {
+      this.logger.logEvent('RUNNER', 'PROTECTION_SCAN_ERROR', '', '', {
+        details: { error: String(err) },
+      });
     }
   }
 

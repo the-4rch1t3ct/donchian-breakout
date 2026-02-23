@@ -45,6 +45,10 @@ export interface OpenOrder {
   price: number;
   size: number;
   postOnly: boolean;
+  reduceOnly?: boolean;
+  isTrigger?: boolean;
+  triggerPx?: number;
+  tpsl?: 'tp' | 'sl';
 }
 
 export interface IndicatorSnapshot {

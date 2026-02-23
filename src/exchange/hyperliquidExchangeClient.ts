@@ -4,7 +4,7 @@ import {
   HttpTransport,
 } from '@nktkas/hyperliquid';
 import { privateKeyToAccount } from 'viem/accounts';
-import type { IExchangeClient, PlaceMarketableOptions } from './exchangeClient.js';
+import type { IExchangeClient, PlaceMarketableOptions, TpslType } from './exchangeClient.js';
 import type { Candle, FillResult, OpenOrder, OrderBookTop, Position, Side } from '../types/index.js';
 import type { StrategyLogger } from '../logger.js';
 
@@ -316,6 +316,55 @@ export class HyperliquidExchangeClient implements IExchangeClient {
     }
   }
 
+  async placeTriggerTpsl(
+    symbol: string,
+    positionSide: Side,
+    size: number,
+    triggerPx: number,
+    tpsl: TpslType,
+  ): Promise<{ orderId?: string }> {
+    // Close side is opposite of current position.
+    const closeSide: Side = positionSide === 'long' ? 'short' : 'long';
+    const assetIndex = this.getAssetIndex(symbol);
+    const cloid = this.generateCloid();
+
+    try {
+      const result = await this.hl.order({
+        orders: [{
+          a: assetIndex,
+          b: closeSide === 'long',
+          // SDK schema requires p>0 even for trigger orders; use triggerPx.
+          p: triggerPx.toFixed(6),
+          s: this.roundSize(symbol, size),
+          r: true, // reduce-only
+          t: { trigger: { isMarket: true, triggerPx: triggerPx.toFixed(6), tpsl } },
+          c: cloid,
+        }],
+        // Make it follow position size changes.
+        grouping: 'positionTpsl',
+      });
+
+      const status = result.response.data.statuses[0] as Record<string, any>;
+      if (status && typeof status === 'object' && 'resting' in status && status.resting) {
+        return { orderId: String(status.resting.oid) };
+      }
+      if (status && typeof status === 'object' && 'filled' in status && status.filled) {
+        return { orderId: String(status.filled.oid) };
+      }
+      if (status && typeof status === 'object' && 'error' in status) {
+        this.logger.logEvent('EXCHANGE', 'EXCHANGE_API_ERROR', symbol, positionSide, {
+          details: { method: 'placeTriggerTpsl', error: String(status.error), tpsl, triggerPx },
+        });
+      }
+      return {};
+    } catch (err) {
+      this.logger.logEvent('EXCHANGE', 'EXCHANGE_API_ERROR', symbol, positionSide, {
+        details: { method: 'placeTriggerTpsl', error: String(err), tpsl, triggerPx },
+      });
+      return {};
+    }
+  }
+
   async getPositions(): Promise<Position[]> {
     try {
       const state = await this.info.clearinghouseState({ user: this.walletAddress });
@@ -380,7 +429,8 @@ export class HyperliquidExchangeClient implements IExchangeClient {
 
   async getOpenOrders(symbol?: string): Promise<OpenOrder[]> {
     try {
-      const orders = await this.info.openOrders({ user: this.walletAddress });
+      // Use frontendOpenOrders so we can see triggerPx + TP/SL info.
+      const orders = await this.info.frontendOpenOrders({ user: this.walletAddress });
       const mapped: OpenOrder[] = [];
 
       for (const o of orders) {
@@ -396,6 +446,10 @@ export class HyperliquidExchangeClient implements IExchangeClient {
           price: parseFloat(o.limitPx),
           size: parseFloat(o.sz),
           postOnly: false, // not exposed in this response
+          reduceOnly: Boolean((o as any).reduceOnly ?? (o as any).isReduceOnly),
+          isTrigger: Boolean((o as any).isTrigger),
+          triggerPx: (o as any).triggerPx != null ? parseFloat((o as any).triggerPx) : undefined,
+          tpsl: ((o as any).tpsl === 'tp' || (o as any).tpsl === 'sl') ? (o as any).tpsl : undefined,
         });
       }
 

@@ -1,5 +1,7 @@
 import type { Candle, FillResult, OpenOrder, OrderBookTop, Position, Side } from '../types/index.js';
 
+export type TpslType = 'tp' | 'sl';
+
 export interface PlaceMarketableOptions {
   /** Max slippage in bps for IOC fallback (e.g. 8 = 0.08%). */
   maxSlippageBps?: number;
@@ -15,6 +17,10 @@ export interface IExchangeClient {
   placeLimit(symbol: string, side: Side, price: number, size: number, postOnly: boolean): Promise<FillResult>;
   cancel(orderId: string): Promise<void>;
   placeMarketable(symbol: string, side: Side, size: number, options?: PlaceMarketableOptions): Promise<FillResult>;
+
+  /** Place reduce-only trigger order for TP/SL on the current position. */
+  placeTriggerTpsl(symbol: string, positionSide: Side, size: number, triggerPx: number, tpsl: TpslType): Promise<{ orderId?: string }>;
+
   getPositions(): Promise<Position[]>;
   getEquity(): Promise<number>;
   getOpenOrders(symbol?: string): Promise<OpenOrder[]>;

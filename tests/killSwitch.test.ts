@@ -5,6 +5,7 @@ import { SimExchangeClient } from '../src/exchange/simExchangeClient.js';
 import { RiskService } from '../src/services/riskService.js';
 import { ExecutionService } from '../src/services/executionService.js';
 import { UniverseService } from '../src/services/universeService.js';
+import { ProtectionService } from '../src/services/protectionService.js';
 import { Runner } from '../src/runner.js';
 import { makeCandle } from './helpers.js';
 import type { IExchangeClient } from '../src/exchange/exchangeClient.js';
@@ -24,6 +25,7 @@ function makeMockExchange(equity: number) {
     async placeMarketable(): Promise<FillResult> { return { filled: true, fillPrice: 100, fillSize: 1 }; },
     async getPositions(): Promise<Position[]> { return []; },
     async getOpenOrders(): Promise<OpenOrder[]> { return []; },
+    async placeTriggerTpsl(): Promise<{ orderId?: string }> { return {}; },
     async cancelAll() { mock.cancelAllCalled++; },
     async closePosition(symbol: string, side: Side, size: number): Promise<FillResult> {
       mock.closeCalls.push({ symbol, side, size });
@@ -62,13 +64,16 @@ describe('Kill switch integration', () => {
     // Init day with starting equity of 10_000
     await riskService.initDay(Date.now(), 10_000);
 
+    const protectionService = new ProtectionService(config, logger, exchange as any);
+
     const runner = new Runner({
       config,
       logger,
-      exchange,
+      exchange: exchange as any,
       riskService,
       executionService,
       universeService,
+      protectionService,
       mode: 'paper',
     });
 
@@ -98,13 +103,16 @@ describe('Kill switch integration', () => {
 
     await riskService.initDay(Date.now(), 10_000);
 
+    const protectionService = new ProtectionService(config, logger, exchange as any);
+
     const runner = new Runner({
       config,
       logger,
-      exchange,
+      exchange: exchange as any,
       riskService,
       executionService,
       universeService,
+      protectionService,
       mode: 'paper',
     });
 
@@ -126,13 +134,16 @@ describe('Kill switch integration', () => {
 
     await riskService.initDay(Date.now(), 10_000);
 
+    const protectionService = new ProtectionService(config, logger, exchange as any);
+
     const runner = new Runner({
       config,
       logger,
-      exchange,
+      exchange: exchange as any,
       riskService,
       executionService,
       universeService,
+      protectionService,
       mode: 'paper',
     });
 
