@@ -344,18 +344,53 @@ export class HyperliquidExchangeClient implements IExchangeClient {
         grouping: 'positionTpsl',
       });
 
-      const status = result.response.data.statuses[0] as Record<string, any>;
-      if (status && typeof status === 'object' && 'resting' in status && status.resting) {
+      const status = result.response.data.statuses[0] as any;
+
+      // Success variants that return an oid directly.
+      if (status && typeof status === 'object' && status.resting) {
         return { orderId: String(status.resting.oid) };
       }
-      if (status && typeof status === 'object' && 'filled' in status && status.filled) {
+      if (status && typeof status === 'object' && status.filled) {
         return { orderId: String(status.filled.oid) };
       }
+
+      // Trigger orders may return the literal "waitingForTrigger".
+      // In that case, fetch open orders and try to locate the new order by fields.
+      if (status === 'waitingForTrigger') {
+        try {
+          const open = await this.info.frontendOpenOrders({ user: this.walletAddress });
+          const cands = open
+            .filter((o: any) => o.coin === symbol)
+            .filter((o: any) => Boolean(o.isTrigger))
+            .filter((o: any) => (o.tpsl === tpsl))
+            .filter((o: any) => {
+              const tp = o.triggerPx != null ? parseFloat(o.triggerPx) : NaN;
+              return Number.isFinite(tp) && Math.abs(tp - triggerPx) / triggerPx < 0.001; // 0.1% tolerance
+            });
+          if (cands.length > 0) {
+            // newest/highest oid is most likely ours
+            const best = cands.sort((a: any, b: any) => (b.oid ?? 0) - (a.oid ?? 0))[0];
+            return { orderId: String(best.oid) };
+          }
+        } catch (err) {
+          this.logger.logEvent('EXCHANGE', 'EXCHANGE_API_ERROR', symbol, positionSide, {
+            details: { method: 'placeTriggerTpsl_followup', error: String(err), tpsl, triggerPx },
+          });
+        }
+        return {};
+      }
+
       if (status && typeof status === 'object' && 'error' in status) {
         this.logger.logEvent('EXCHANGE', 'EXCHANGE_API_ERROR', symbol, positionSide, {
           details: { method: 'placeTriggerTpsl', error: String(status.error), tpsl, triggerPx },
         });
+        return {};
       }
+
+      // Unknown status: log for debugging.
+      this.logger.logEvent('EXCHANGE', 'EXCHANGE_API_ERROR', symbol, positionSide, {
+        details: { method: 'placeTriggerTpsl', error: 'Unknown order status', status, tpsl, triggerPx },
+      });
       return {};
     } catch (err) {
       this.logger.logEvent('EXCHANGE', 'EXCHANGE_API_ERROR', symbol, positionSide, {
