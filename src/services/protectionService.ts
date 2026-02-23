@@ -171,6 +171,35 @@ export class ProtectionService {
       });
     }
 
+    // Cancel orphan TP/SL trigger orders for symbols with no open position.
+    // (HL can sometimes keep reduce-only TP/SL around; keep the account clean.)
+    try {
+      const liveSyms = new Set(positions.map(p => p.symbol));
+      const openOrders = await this.exchange.getOpenOrders();
+      const orphans = openOrders
+        .filter(o => !liveSyms.has(o.symbol))
+        .filter(o => Boolean(o.isTrigger))
+        .filter(o => o.reduceOnly)
+        .filter(o => o.tpsl === 'tp' || o.tpsl === 'sl');
+
+      for (const o of orphans) {
+        try {
+          await this.exchange.cancel(o.orderId);
+          this.logger.logEvent('RISK', 'ORPHAN_TPSL_CANCELLED', o.symbol, o.side, {
+            details: { orderId: o.orderId, tpsl: o.tpsl, triggerPx: o.triggerPx, price: o.price, size: o.size },
+          });
+        } catch (err) {
+          this.logger.logEvent('RISK', 'ORPHAN_TPSL_CANCEL_ERROR', o.symbol, o.side, {
+            details: { orderId: o.orderId, error: String(err) },
+          });
+        }
+      }
+    } catch (err) {
+      this.logger.logEvent('RISK', 'ORPHAN_TPSL_SCAN_ERROR', '', '', {
+        details: { error: String(err) },
+      });
+    }
+
     // Prune local file of positions that no longer exist on exchange.
     const all = this.loadAll();
     const liveSyms = new Set(positions.map(p => p.symbol));
