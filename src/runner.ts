@@ -104,6 +104,11 @@ export class Runner {
   }
 
   async startupChecks(): Promise<void> {
+    // Universe refresh/build (auto universe builder runs here if enabled)
+    if (this.universeService.needsRefresh()) {
+      await this.universeService.refresh(this.exchange);
+    }
+
     const requestedSymbols = this.universeService.getSymbols();
     const equity = await this.exchange.getEquity();
     const positions = await this.exchange.getPositions();
@@ -156,6 +161,17 @@ export class Runner {
 
   async tick(): Promise<void> {
     const now = Date.now();
+
+    // Periodic universe refresh/build (by default every UNIVERSE_REFRESH_HOURS).
+    if (this.universeService.needsRefresh()) {
+      try {
+        await this.universeService.refresh(this.exchange);
+      } catch (err) {
+        this.logger.logEvent('RUNNER', 'UNIVERSE_REFRESH_ERROR', '', '', {
+          details: { error: String(err) },
+        });
+      }
+    }
 
     const equity = await this.exchange.getEquity();
     const { dd, softBrake, hardKill } = await this.riskService.updateDailyDD(now, equity);

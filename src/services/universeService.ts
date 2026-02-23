@@ -1,5 +1,6 @@
 import type { Config } from '../config.js';
 import type { StrategyLogger } from '../logger.js';
+import type { IExchangeClient } from '../exchange/exchangeClient.js';
 
 export interface UniverseStats {
   symbol: string;
@@ -50,10 +51,36 @@ export class UniverseService {
    *  - Wick-stop frequency (positions stopped by wicks that immediately reversed)
    *  - Volume rank
    */
-  async refresh(): Promise<void> {
+  async refresh(exchange?: IExchangeClient): Promise<void> {
     this.lastRefresh = Date.now();
+
+    // Auto universe builder (HL-only for now via duck-typing).
+    if (this.config.autoUniverse && this.config.autoUniverseTarget > 0 && exchange) {
+      try {
+        const ranked = await (exchange as any).getLiquidityRankedSymbols?.();
+        if (Array.isArray(ranked) && ranked.length > 0) {
+          const target = Math.min(this.config.autoUniverseTarget, this.config.maxSymbols);
+          const symbols = ranked
+            .map((r: any) => String(r.symbol))
+            .filter(Boolean)
+            .slice(0, target);
+
+          if (symbols.length >= this.config.minSymbols) {
+            this.symbols = symbols;
+            this.logger.logSignal('', '', 'UNIVERSE_AUTO_BUILT', {
+              details: { target, count: symbols.length, top: symbols.slice(0, 10) },
+            });
+          }
+        }
+      } catch (e: any) {
+        this.logger.logSignal('', '', 'UNIVERSE_AUTO_BUILD_ERROR', {
+          details: { err: String(e?.message ?? e) },
+        });
+      }
+    }
+
     this.logger.logSignal('', '', 'UNIVERSE_REFRESH', {
-      details: { symbols: this.symbols },
+      details: { symbols: this.symbols, count: this.symbols.length },
     });
   }
 

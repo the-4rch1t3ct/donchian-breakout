@@ -42,6 +42,24 @@ export interface HlClientOptions {
  * Uses @nktkas/hyperliquid SDK with viem wallet for EIP-712 signing.
  */
 export class HyperliquidExchangeClient implements IExchangeClient {
+  async getLiquidityRankedSymbols(): Promise<Array<{ symbol: string; dayNtlVlm: number; openInterest: number }>> {
+    const mac = await this.info.metaAndAssetCtxs();
+    const u = mac[0]?.universe ?? [];
+    const ctxs = mac[1] ?? [];
+    const rows: Array<{ symbol: string; dayNtlVlm: number; openInterest: number }> = [];
+    for (let i = 0; i < u.length; i++) {
+      const sym = u[i]?.name;
+      if (!sym) continue;
+      const c = ctxs[i] ?? {};
+      const dayNtlVlm = parseFloat(String((c as any).dayNtlVlm ?? '0'));
+      const openInterest = parseFloat(String((c as any).openInterest ?? '0'));
+      if (!Number.isFinite(dayNtlVlm) || dayNtlVlm <= 0) continue;
+      rows.push({ symbol: sym, dayNtlVlm, openInterest: Number.isFinite(openInterest) ? openInterest : 0 });
+    }
+    rows.sort((a, b) => (b.dayNtlVlm - a.dayNtlVlm) || (b.openInterest - a.openInterest));
+    return rows;
+  }
+
   private info: InstanceType<typeof InfoClient>;
   private hl: InstanceType<typeof HlExchangeClient>;
   private walletAddress: `0x${string}`;

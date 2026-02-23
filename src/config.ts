@@ -29,9 +29,11 @@ export const CONFIG = {
         'OP', 'ARB', 'LTC', 'BCH', 'DOT', 'APT', 'NEAR', 'ATOM', 'UNI',
         'INJ', 'TIA', 'SEI', 'WIF', 'TRX', 'FIL', 'ETC', 'XLM',
       ],
-  universeRefreshHours: 8,
+  universeRefreshHours: envFloat('UNIVERSE_REFRESH_HOURS', 8),
   minSymbols: 10,
-  maxSymbols: 40,
+  maxSymbols: envInt('MAX_SYMBOLS', 40),
+  autoUniverse: process.env.AUTO_UNIVERSE === 'true',
+  autoUniverseTarget: envInt('AUTO_UNIVERSE_TARGET', 0), // 0 = disabled
 
   // ── Indicators (15m) ─────────────────────────────────
   donchianLength: 20,           // configurable 15–30
