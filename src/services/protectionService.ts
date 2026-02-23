@@ -179,8 +179,7 @@ export class ProtectionService {
       const orphans = openOrders
         .filter(o => !liveSyms.has(o.symbol))
         .filter(o => Boolean(o.isTrigger))
-        .filter(o => o.reduceOnly)
-        .filter(o => o.tpsl === 'tp' || o.tpsl === 'sl');
+        .filter(o => o.reduceOnly);
 
       for (const o of orphans) {
         try {
