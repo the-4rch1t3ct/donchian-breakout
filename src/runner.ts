@@ -137,6 +137,15 @@ export class Runner {
 
     await this.riskService.initDay(Date.now(), equity);
 
+    // Immediately sync protection meta so ops-watchdog doesn't flag desync after restarts.
+    try {
+      await this.protectionService.scanAndRepair();
+    } catch (err) {
+      this.logger.logEvent('RUNNER', 'PROTECTION_SCAN_ERROR', '', '', {
+        details: { error: String(err) },
+      });
+    }
+
     this.logger.logEvent('RUNNER', 'LIVE_STARTUP_CHECK', '', '', {
       details: {
         mode: this.mode,
