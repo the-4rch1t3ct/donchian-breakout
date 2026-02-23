@@ -22,6 +22,20 @@ export class DonchianBreakout15m {
   private cooldowns: CooldownEntry[] = [];
   private barIndex = 0;
 
+  private pendingEntries: Map<string, {
+    symbol: string;
+    side: Side;
+    size: number;
+    leverage: number;
+    riskAmount: number;
+    stopDist: number;
+    atrAtSignal: number;
+    breakLevel: number;
+    orderId?: string;
+    placedAtMs: number;
+    expiresAtMs: number;
+  }> = new Map();
+
   constructor(
     private config: Config,
     private logger: StrategyLogger,
@@ -77,6 +91,120 @@ export class DonchianBreakout15m {
     if (existingTrade) {
       await this.manageExistingPosition(symbol, existingTrade, candles15m, timestampMs);
       return;
+    }
+
+    // Resolve pending retest entries (non-blocking).
+    const pending = this.pendingEntries.get(symbol);
+    if (pending) {
+      const indicators = this.computeIndicators(candles15m);
+      const currentCandle = candles15m[candles15m.length - 1];
+
+      // If breakout failed (closed back inside), cancel early.
+      if (indicators) {
+        const bufferMult = this.config.bufferBps / 10_000;
+        const breakLevel = pending.breakLevel;
+        const stillValid = pending.side === 'long'
+          ? currentCandle.close >= breakLevel * (1 - bufferMult)
+          : currentCandle.close <= breakLevel * (1 + bufferMult);
+        if (!stillValid) {
+          if (pending.orderId) {
+            try { await this.exchange.cancel(pending.orderId); } catch { /* ignore */ }
+          }
+          this.pendingEntries.delete(symbol);
+          this.logger.logSignal(symbol, pending.side, 'ENTRY_RETEST_CANCELLED_BREAK_FAILED', {
+            executionPath: 'SKIPPED_NO_FILL',
+            details: { breakLevel: pending.breakLevel, close: currentCandle.close },
+          });
+          return;
+        }
+      }
+
+      if (timestampMs >= pending.expiresAtMs) {
+        if (pending.orderId) {
+          try { await this.exchange.cancel(pending.orderId); } catch { /* ignore */ }
+        }
+        this.pendingEntries.delete(symbol);
+        this.logger.logSignal(symbol, pending.side, 'ENTRY_RETEST_EXPIRED', {
+          executionPath: 'SKIPPED_NO_FILL',
+          details: { breakLevel: pending.breakLevel },
+        });
+        return;
+      }
+
+      // Check if it filled (position exists on exchange).
+      try {
+        const positions = await this.exchange.getPositions();
+        const pos = positions.find(p => p.symbol === symbol);
+        if (!pos) return;
+
+        // Filled: clear pending order id (best-effort cancel just in case)
+        if (pending.orderId) {
+          try { await this.exchange.cancel(pending.orderId); } catch { /* ignore */ }
+        }
+        this.pendingEntries.delete(symbol);
+
+        const entryPrice = pos.entryPrice;
+        const size = pos.size;
+
+        const initialStop = pending.side === 'long'
+          ? entryPrice - pending.stopDist
+          : entryPrice + pending.stopDist;
+
+        const trailDist = this.config.trailAtrMult * pending.atrAtSignal;
+        const trailingStop = pending.side === 'long'
+          ? currentCandle.close - trailDist
+          : currentCandle.close + trailDist;
+
+        const trade: TradeState = {
+          symbol,
+          side: pending.side,
+          entryPrice,
+          entryTime: timestampMs,
+          size,
+          leverage: pending.leverage,
+          initialStop,
+          trailingStop: pending.side === 'long'
+            ? Math.max(initialStop, trailingStop)
+            : Math.min(initialStop, trailingStop),
+          atrAtEntry: pending.atrAtSignal,
+          riskAmount: pending.riskAmount,
+          executionPath: 'RETEST_LIMIT',
+        };
+
+        this.openTrades.set(symbol, trade);
+
+        this.logger.logSignal(symbol, pending.side, 'POSITION_OPENED', {
+          executionPath: 'RETEST_LIMIT',
+          details: {
+            entryPrice: trade.entryPrice,
+            size: trade.size,
+            leverage: trade.leverage,
+            breakLevel: pending.breakLevel,
+          },
+        });
+
+        // Immediately ensure on-exchange SL/TP exist.
+        const R = Math.abs(trade.entryPrice - trade.initialStop);
+        const tpPx = trade.side === 'long'
+          ? trade.entryPrice + (this.config.tpRMultiple * R)
+          : trade.entryPrice - (this.config.tpRMultiple * R);
+
+        if (this.protectionService && this.config.mode !== 'sim') {
+          await this.protectionService.ensureForPosition({
+            symbol: trade.symbol,
+            side: trade.side,
+            size: trade.size,
+            entryPrice: trade.entryPrice,
+            stopPx: trade.initialStop,
+            tpPx,
+          });
+        }
+
+        return;
+      } catch {
+        // ignore, try again next tick
+        return;
+      }
     }
 
     if (this.riskService.isKilled()) return;
@@ -149,6 +277,88 @@ export class DonchianBreakout15m {
           leverage,
         },
       });
+      return;
+    }
+
+    const bufferMult = this.config.bufferBps / 10_000;
+    const breakLevel = signal.side === 'long'
+      ? indicators.donchianHigh * (1 + bufferMult)
+      : indicators.donchianLow * (1 - bufferMult);
+
+    // A) No-chase cap: refuse entries too far past breakout level.
+    const maxChaseBps = this.config.maxChaseBps;
+    if (Number.isFinite(maxChaseBps) && maxChaseBps > 0) {
+      const capMult = maxChaseBps / 10_000;
+      const tooFar = signal.side === 'long'
+        ? currentCandle.close > breakLevel * (1 + capMult)
+        : currentCandle.close < breakLevel * (1 - capMult);
+
+      if (tooFar) {
+        this.logger.logSignal(symbol, signal.side, 'SKIPPED_CHASE_CAP', {
+          executionPath: 'SKIPPED_FILTERS',
+          details: { close: currentCandle.close, breakLevel, maxChaseBps },
+          signalParams: this.signalParams(currentCandle, indicators),
+          riskSnapshot: {
+            equity,
+            ddUtc: dd,
+            riskPerTrade: this.config.riskPerTrade,
+            sizeMult,
+            stopDist: stopDistPct,
+            positionSize: positionSizeInUnits,
+            leverage,
+          },
+        });
+        return;
+      }
+    }
+
+    // Retest entry mode (post-only limit at/near breakout level).
+    if (this.config.enableRetestEntry && this.config.mode !== 'sim') {
+      const off = this.config.retestOffsetBps / 10_000;
+      const limitPx = signal.side === 'long'
+        ? breakLevel * (1 + off)
+        : breakLevel * (1 - off);
+
+      const placedAtMs = timestampMs;
+      const expiresAtMs = placedAtMs + (this.config.retestMaxBars * this.config.signalTimeframeMs);
+
+      this.logger.logSignal(symbol, signal.side, 'ENTRY_RETEST_PLACED', {
+        executionPath: 'NO_SIGNAL',
+        details: {
+          breakLevel,
+          limitPx,
+          postOnly: true,
+          expiresAt: new Date(expiresAtMs).toISOString(),
+          maxChaseBps: this.config.maxChaseBps,
+        },
+        signalParams: this.signalParams(currentCandle, indicators),
+        riskSnapshot: {
+          equity,
+          ddUtc: dd,
+          riskPerTrade: this.config.riskPerTrade,
+          sizeMult,
+          stopDist: stopDistPct,
+          positionSize: positionSizeInUnits,
+          leverage,
+        },
+      });
+
+      const r = await this.exchange.placeLimit(symbol, signal.side, limitPx, positionSizeInUnits, true);
+
+      this.pendingEntries.set(symbol, {
+        symbol,
+        side: signal.side,
+        size: positionSizeInUnits,
+        leverage,
+        riskAmount,
+        stopDist,
+        atrAtSignal: indicators.atr,
+        breakLevel,
+        orderId: r.orderId,
+        placedAtMs,
+        expiresAtMs,
+      });
+
       return;
     }
 

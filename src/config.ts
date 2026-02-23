@@ -41,6 +41,12 @@ export const CONFIG = {
   // ── Entry signal ──────────────────────────────────────
   bufferBps: 3,                 // configurable 2–8
   maxBreakoutAtrMult: envFloat('MAX_BREAKOUT_ATR_MULT', Infinity),
+  maxChaseBps: envInt('MAX_CHASE_BPS', 0), // A: refuse entries too far past breakout level (0=disabled)
+
+  // ── Entry execution variants (optional) ────────────────
+  enableRetestEntry: process.env.ENABLE_RETEST_ENTRY === 'true',
+  retestOffsetBps: envInt('RETEST_OFFSET_BPS', 2), // place limit slightly beyond level to improve fill
+  retestMaxBars: envInt('RETEST_MAX_BARS', 2), // valid window (15m bars) after breakout close
 
   // ── Donchian width filter (optional, off by default) ───
   enableWidthFilter: process.env.ENABLE_WIDTH_FILTER === 'true',
