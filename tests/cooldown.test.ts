@@ -66,6 +66,8 @@ describe('Cooldown after stop-out', () => {
     cooldownBars: 5,
     stopAtrMult: 2.0,
     trailAtrMult: 3.0,
+    atrPctMax: Infinity,
+    atrPctMaxSoft: Infinity,
   };
 
   it('blocks re-entry in same symbol+direction within cooldown window', async () => {

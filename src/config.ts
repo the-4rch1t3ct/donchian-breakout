@@ -15,7 +15,7 @@ function envInt(key: string, fallback: number): number {
 }
 
 const _widthPctMin = envFloat('WIDTH_PCT_MIN', 0);
-const _atrPctMax = envFloat('ATR_PCT_MAX', Infinity);
+const _atrPctMax = envFloat('ATR_PCT_MAX', 0.02); // chaos ceiling: default 2%; set to Infinity or very high to disable
 
 export const CONFIG = {
   // ── Mode ─────────────────────────────────────────────
@@ -47,7 +47,7 @@ export const CONFIG = {
   widthPctMinSoft: envFloat('WIDTH_PCT_MIN_SOFT', _widthPctMin),
 
   // ── Regime filter (normal) ────────────────────────────
-  minAtrPct: 0.0045,
+  minAtrPct: 0.004,   // 0.40% min; avoid dead chop
   minAdx: 22,
   maxCandleRangeAtr: 2.0,
   atrPctMax: _atrPctMax,
@@ -80,7 +80,7 @@ export const CONFIG = {
 
   // ── Execution (1m guards) ─────────────────────────────
   entryWindowMinutes: 5,
-  maxSpreadBps: 10,
+  maxSpreadBps: envInt('MAX_SPREAD_BPS', 15),
   maxSlippageBps: 8,
   maxMinuteRangeAtrMult: 3.0,
   volatilityLookbackMinutes: 3,

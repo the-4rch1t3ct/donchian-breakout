@@ -28,7 +28,7 @@ describe('ExecutionService', () => {
 
       const result = await env.execution.checkMicrostructure('TEST');
       expect(result.pass).toBe(true);
-      expect(result.spreadBps).toBeLessThanOrEqual(10);
+      expect(result.spreadBps).toBeLessThanOrEqual(env.config.maxSpreadBps);
     });
 
     it('fails when spread exceeds maxSpreadBps', async () => {

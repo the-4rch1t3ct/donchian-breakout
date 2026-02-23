@@ -28,20 +28,20 @@ npm run live          # live trading (requires env vars)
 
 | Filter | Normal | Soft Brake (DD <= -1.5%) |
 |--------|--------|--------------------------|
-| ATR% | >= 0.45% | >= 0.55% |
+| ATR% | >= 0.40% | >= 0.55% |
 | ADX | >= 22 | >= 26 |
 | Candle range / ATR | <= 2.0 | <= 1.7 |
 
-### ATR% chaos ceiling (optional, off by default)
+### ATR% chaos ceiling (on by default)
 
-Avoids entering during extreme volatility (news spike / chaos regime). When enabled, if ATR% is **above** the configured max, the bar is skipped with `SKIPPED_HIGH_ATR_PCT`.
+Avoids entering during extreme volatility (news spike / chaos regime), where spreads and whipsaws blow you up. If ATR% is **above** the configured max, the bar is skipped with `SKIPPED_HIGH_ATR_PCT`.
 
 | Env / config | Default | Description |
 |--------------|---------|-------------|
-| `ATR_PCT_MAX` | off (no cap) | Max ATR% allowed; e.g. `0.02` = 2.0%. Unset = no filter. |
+| `ATR_PCT_MAX` | 0.02 (2%) | Max ATR% allowed; e.g. `0.03` = 3%. Set very high or leave unset to use default 2%. |
 | `ATR_PCT_MAX_SOFT` | same as `ATR_PCT_MAX` | Max ATR% when in soft brake (DD ≤ -1.5%). |
 
-Start in paper with e.g. `ATR_PCT_MAX=0.02` (2.0%) and tune if needed.
+Typical range 2–3%. Set `ATR_PCT_MAX=0.03` for a looser cap, or a high value to effectively disable.
 
 ### Donchian width % (optional, off by default)
 
@@ -224,7 +224,7 @@ All parameters live in `src/config.ts`. Key knobs (all env-overridable):
 | `makerTimeoutMs` | `MAKER_TIMEOUT_MS` | 2000 | Maker wait before cancel and IOC (ms) |
 | `iocMaxSlippageBps` | `IOC_MAX_SLIPPAGE_BPS` | 8 | Max slippage for IOC fallback (bps) |
 | `iocPriceImprovementBps` | `IOC_PRICE_IMPROVEMENT_BPS` | 0 | Optional improvement for IOC limit price |
-| `atrPctMax` | `ATR_PCT_MAX` | off (Infinity) | Max ATR% to allow entry (chaos ceiling); e.g. 0.02 = 2% |
+| `atrPctMax` | `ATR_PCT_MAX` | 0.02 (2%) | Max ATR% to allow entry (chaos ceiling); 2–3% typical |
 | `atrPctMaxSoft` | `ATR_PCT_MAX_SOFT` | same as atrPctMax | Max ATR% when in soft brake |
 
 Static config (edit `src/config.ts`):

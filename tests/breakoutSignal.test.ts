@@ -74,6 +74,7 @@ describe('Close-confirmed breakout with buffer', () => {
     const env = makeTestEnv({
       donchianLength: 5, atrLength: 5, adxLength: 5, bufferBps: 3,
       minAtrPct: 0.001, minAdx: 1, maxCandleRangeAtr: 10,
+      atrPctMax: Infinity, atrPctMaxSoft: Infinity,
     });
     const ts = Date.UTC(2025, 0, 1);
     await env.riskService.initDay(ts, 10_000);
@@ -200,6 +201,8 @@ describe('Donchian width filter', () => {
       maxCandleRangeAtr: 10,
       enableWidthFilter: false,
       widthPctMin: 0.05,
+      atrPctMax: Infinity,
+      atrPctMaxSoft: Infinity,
     });
     const ts = Date.UTC(2025, 0, 1);
     await env.riskService.initDay(ts, 10_000);
