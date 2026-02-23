@@ -161,7 +161,6 @@ export class ProtectionService {
   /** Scan exchange for any open positions missing SL/TP and repair. */
   async scanAndRepair(): Promise<void> {
     const positions = await this.exchange.getPositions();
-    if (positions.length === 0) return;
 
     for (const p of positions) {
       await this.ensureForPosition({
